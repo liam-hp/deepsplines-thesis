@@ -1,0 +1,7 @@
+# @package _global_
+
+arch_name: "2R"
+
+use_splines: False
+transplant_splines: False
+transplant_splines_freeze_weights: False
