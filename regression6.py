@@ -12,13 +12,13 @@ from omegaconf import DictConfig, OmegaConf, ListConfig
 import hydra
 
 from models import LinearReLU, LinearBSpline
-from deepspeed.profiling.flops_profiler import get_model_profile
 
-from utils import calc_bspline_flops
 import json
 import numpy as np
 from datetime import datetime, timedelta
 from torch.utils.data import TensorDataset, DataLoader
+
+import linspline
 
 import string, random, os
 
@@ -65,7 +65,7 @@ def training_run(mparams, tparams, X, y):
             model: return the model itself
 
     '''
-
+    
     # train-test split of the dataset
     X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.85, shuffle=True)
 
@@ -93,9 +93,11 @@ def training_run(mparams, tparams, X, y):
 
     model_save_code = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
     
-    for arch in ["relu", "bspline", "both"]:
+    for arch in ["relu", "bspline", "both", "lspline"]:
         
-        # set specifications based on the architecture
+        epochs = 0
+
+        #^ initialize the correct architecture
         if(arch == "relu"):
             if(tparams.relu_epochs == 0):
                 continue
@@ -106,28 +108,28 @@ def training_run(mparams, tparams, X, y):
             
             if(tparams.lrs == "steplr"):
                 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=tparams.lrs_stepsize, gamma=tparams.lrs_gamma)
-
         elif(arch == "bspline" or arch == "both"):
             if(arch == "bspline"):
-                if(tparams.spline_epochs == 0):
+                if(tparams.bspline_epochs == 0):
                     continue
                 if(tparams.relu_epochs > 0): # if we pretrained on ReLU, load those weights
                     model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
                     model.load_state_dict(torch.load(f"./temp_models/{model_save_code}.pt", weights_only=True), strict=False)
                 else:
                     model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
-                epochs = tparams.spline_epochs
+                epochs = tparams.bspline_epochs
 
             if(arch == "both"):
                 if(tparams.both_epochs == 0):
                     continue
-                elif(tparams.spline_epochs == 0):
+                elif(tparams.bspline_epochs == 0):
                     if(tparams.relu_epochs > 0): # if we pretrained on ReLU, load those weights
                         model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
                         model.load_state_dict(torch.load(f"./temp_models/{model_save_code}.pt", weights_only=True), strict=False)
                     else:
                         model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
-                # else we just continue training on the same model
+
+                # else bspline_epochs > 0, we just continue training that model but unfreeze weights and biases
                 epochs = tparams.both_epochs
 
             
@@ -141,48 +143,59 @@ def training_run(mparams, tparams, X, y):
             
             lmbda = 1e-4 # regularization weight
             lipschitz = False # lipschitz control
-        
-        # training loop
-        length = epochs + (tparams.comp_relu if arch=="relu" else 0)
+        elif(arch == "lspline"):
+            if(tparams.bspline_epochs > 0 or tparams.both_epochs > 0):
+                epochs = tparams.lspline_epochs
+                bspline_layers=model.get_layers()
+                model = linspline.LSplineFromBSpline(bspline_layers)
+                optimizer = optim.Adam(model.parameters(), lr=tparams.lr_ls)
 
+            else:
+                continue
+        
+        train_wb = arch in ["relu", "both", "lspline"] # train weights and biases
+        train_af = arch in ["bspline", "both"] # train activation func
+
+        length = epochs + (tparams.comp_relu if arch=="relu" else 0)
+        if length == 0:
+            continue # skip rounds on 0 epochs
+
+        # ^ training loop
+        model.train()
         for epoch in range(length):
-            
-            # train the model
-            model.train()
             epoch_loss = 0
             epoch_start = datetime.now()
 
             # train over batches
             for X_batch, y_batch in train_loader:
 
-                # forward pass + get loss
+                # zero grad, forward pass, and calc loss
                 y_pred = model(X_batch)
-                if(arch == "relu" or arch == "both"):
+                loss = loss_fn(y_pred, y_batch)
+                epoch_loss += float(loss) * len(X_batch) # dont record bspline loss (for comparison)
+
+                if(train_wb):
                     optimizer.zero_grad()
-                if(arch == "bspline" or arch == "both"):
+                if(train_af):
                     aux_optimizer.zero_grad()
-                    if lipschitz is True:
-                        loss = lmbda * model.BV2()
-                    else:
-                        loss = lmbda * model.TV2()
+                    loss += lmbda * (model.BV2() if lipschitz else model.TV2())
 
                 loss += loss_fn(y_pred, y_batch)
-                epoch_loss += float(loss) * len(X_batch)
 
                 # compute gradient and step on the optimizer
                 loss.backward()
-                if(arch == "relu" or arch == "both"):
+                if(train_wb):
                     optimizer.step()
-                if(arch == "bspline" or arch == "both"):
+                if(train_af):
                     aux_optimizer.step()                
             
             # step the LR scheduler
             if(tparams.lrs != "none" and tparams.lrs != "None"):
-                if((arch == "bspline" or arch == "both") and scheduler.get_last_lr()[0] * tparams.lrs_gamma > 0.0001):
+                if(train_wb and scheduler.get_last_lr()[0] * tparams.lrs_gamma > 0.0001):
                     scheduler.step()
-                if((arch=="bspline" or arch=="both") and aux_scheduler.get_last_lr()[0] * tparams.lrs_gamma > 0.00001):
+                if(train_af and aux_scheduler.get_last_lr()[0] * tparams.lrs_gamma > 0.00001):
                     aux_scheduler.step()
-
+            
             # training loss: normalize to per-input MSE for saving
             avg_epoch_loss = epoch_loss / len(X_train)
 
@@ -216,34 +229,27 @@ def training_run(mparams, tparams, X, y):
                 if(epoch == length - tparams.comp_relu - 1): # if we're at the switch point, save the model
                     torch.save(model.state_dict(), f"./temp_models/{model_save_code}.pt")
         
-        if(tparams.comp_relu == 0): # if not comp_relu, save at the end of the round of training
-            torch.save(model.state_dict(), f"./temp_models/{model_save_code}.pt")
-        
-        elif(arch == "relu"): # if it is comp_relu and we're on relu 
-            start_time = time.perf_counter()
-            _ = model(X_test) # model output is irrelevant
-            end_time = time.perf_counter()
-            cr_fwd_lat = (end_time - start_time) / len(X_test) * 1000 * 1000 # per sample latency: seconds -> nanoseconds
-            cr_fwd_lat = round(cr_fwd_lat, 4)
+        if(arch == "relu" and tparams.relu_epochs > 0):
+            if(tparams.comp_relu == 0): # if not comp_relu, save at the end of the round of training
+                torch.save(model.state_dict(), f"./temp_models/{model_save_code}.pt")
+            
+            else: # if it is comp_relu (and we're on relu )
+                start_time = time.perf_counter()
+                _ = model(X_test) # model output is irrelevant
+                end_time = time.perf_counter()
+                cr_fwd_lat = (end_time - start_time) * 1000 * 1000 / len(X_test) # per sample latency: seconds -> nanosec per input
+                cr_fwd_lat = round(cr_fwd_lat, 4)
 
-    # compute forward latency of end model
-
-    #! NOT PER SAMPLE LATENCY THOUGH... X_test is 15% of dataset
+    #^ compute forward latency of end model
     start_time = time.perf_counter()
     _ = model(X_test) # model output is irrelevant
     end_time = time.perf_counter()
-    fwd_lat = (end_time - start_time) / len(X_test) * 1000 * 1000 # per sample latency: seconds -> nanoseconds
+    fwd_lat = (end_time - start_time) * 1000 * 1000 / len(X_test) # per sample latency: seconds -> nanosec per input
     fwd_lat = round(fwd_lat, 4)
-
-    final_locs = None
-    final_coeffs = None
-    if(tparams.spline_epochs > 0):
-        final_locs = model.get_deepspline_activations()[0]['locations']
-        final_coeffs = model.get_deepspline_activations()[0]['coefficients']
-
-    os.remove(f"./temp_models/{model_save_code}.pt")
-
-    return model, train_history, val_history, train_times, fwd_lat, final_locs, final_coeffs, cr_val_history, cr_train_history, cr_train_times, cr_fwd_lat
+    
+    if(tparams.relu_epochs > 0): # this is only used if we pretrained on ReLU
+        os.remove(f"./temp_models/{model_save_code}.pt")
+    return model, train_history, val_history, train_times, fwd_lat, cr_val_history, cr_train_history, cr_train_times, cr_fwd_lat
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -282,30 +288,34 @@ def my_app(cfg: DictConfig) -> None:
             
     tparams = Config(
         relu_epochs = cfg.relu_epochs,
-        spline_epochs = cfg.spline_epochs,
+        bspline_epochs = cfg.bspline_epochs,
         both_epochs = cfg.both_epochs,
+        lspline_epochs = cfg.lspline_epochs,
         batch_size = cfg.batch_size,
         lr_wb = cfg.lr_wb,
         lr_bs = cfg.lr_bs,
+        lr_ls = cfg.lr_ls,
         lrs = cfg.lrs,
         lrs_gamma = cfg.lrs_gamma,
         lrs_stepsize = cfg.lrs_stepsize,
         comp_relu = cfg.comp_relu,
     )
+
+    print("Init complete.")
     
     for r in range(cfg.runs):
         start_time = datetime.now()
-        model, train_history, val_history, train_times, fwd_lat, final_locs, final_coeffs, cr_val_history, cr_train_history, cr_train_times, cr_fwd_lat = training_run(mparams, tparams, X, y)
+        model, train_history, val_history, train_times, fwd_lat, cr_val_history, cr_train_history, cr_train_times, cr_fwd_lat = training_run(mparams, tparams, X, y)
 
         run_validations.append(val_history)
         run_history.append(train_history)
-        run_epoch_times.append([t.microseconds / 1000 / 1000 for t in train_times]) # us to seconds
+        run_epoch_times.append([t.microseconds / 1000 / 1000 for t in train_times]) # microsec to seconds
         run_summaries.append([r+1, min(val_history), val_history[-1], round(sum(run_epoch_times[-1]),2), fwd_lat ])
 
         if(cfg.comp_relu > 0):
             cr_run_validations.append(cr_val_history)
             cr_run_history.append(cr_train_history)
-            cr_run_epoch_times.append([t.microseconds / 1000 / 1000 for t in cr_train_times]) # us to seconds
+            cr_run_epoch_times.append([t.microseconds / 1000 / 1000 for t in cr_train_times]) # microsec to seconds
             cr_run_summaries.append([r+1, min(cr_val_history), cr_val_history[-1], round(sum(cr_run_epoch_times[-1]),2), cr_fwd_lat ])
 
         print(f"Run {r} complete: {(datetime.now() - start_time).seconds}s")
@@ -327,9 +337,8 @@ def my_app(cfg: DictConfig) -> None:
     rerun = 0
     if(outliers > 0):
         print(f"rerunning {outliers} outliers...")
-
     while(rerun < outliers):
-        model, train_history, val_history, train_times, fwd_lat, final_locs, final_coeffs, cr_val_history, cr_train_history, cr_train_times, cr_fwd_lat = training_run(mparams, tparams, X, y)
+        model, train_history, val_history, train_times, fwd_lat, cr_val_history, cr_train_history, cr_train_times, cr_fwd_lat = training_run(mparams, tparams, X, y)
         if(val_history[-1] <= avg*1.5):
             if(cfg.comp_relu > 0): # if comp_relu, we also need to check that
                 if(cr_val_history[-1] <= cr_avg*1.5): 
@@ -351,6 +360,9 @@ def my_app(cfg: DictConfig) -> None:
             rerun += 1 
             print(f"Rerun outlier {rerun} complete")
 
+    '''
+    skip the profiler- should do that later in a notebook
+
     try:
         base_flops, macs, params = get_model_profile(model=model, # model
             input_shape=(cfg.batch_size, 8), # input shape to the model. If specified, the model takes a tensor with this shape as the only positional argument.
@@ -369,11 +381,14 @@ def my_app(cfg: DictConfig) -> None:
         base_flops = "-1000K"
         params = -1000000
 
+    print("\nProfiler successful")
+
     flops = float(base_flops.replace("K", "").strip()) * 1000 / cfg.batch_size
-    if(cfg.spline_epochs > 0 or cfg.both_epochs > 0):
+    if((cfg.spline_epochs > 0 or cfg.both_epochs > 0) and not cfg.lspline_epochs > 0):
         flops += calc_bspline_flops(model)
 
     print(f"\n{flops} FLOPs, {params} Params \n")
+    '''
 
     # time_deltas = [time_str_to_timedelta(row[3]) for row in run_summaries]
     time_deltas = [row[3] for row in run_summaries]
@@ -395,8 +410,8 @@ def my_app(cfg: DictConfig) -> None:
         "mparams": mparams.to_dict(),
         "tparams": tparams.to_dict(),
 
-        "flops (final model)": flops,
-        "params (final model)": params,
+        # "flops (final model)": flops,
+        # "params (final model)": params,
 
         "avg_time": average_time_delta,
         "avg_fwdlat": average_fwd_latency,
@@ -405,6 +420,7 @@ def my_app(cfg: DictConfig) -> None:
         "vals": run_validations,
         "trains": run_history,
     }
+    
     if(cfg.comp_relu > 0):
         data.update({
             "avg_cr_time": cr_average_time_delta,
@@ -415,9 +431,9 @@ def my_app(cfg: DictConfig) -> None:
         })
 
     if(tparams.lrs == "steplr"):
-        out = f"{cfg.layers}_({cfg.lr_wb},{cfg.lr_bs},{cfg.lrs_gamma},{cfg.lrs_stepsize})_({cfg.relu_epochs},{cfg.spline_epochs},{cfg.both_epochs},{cfg.comp_relu})_{cfg.runs}"
+        out = f"{cfg.layers}_({cfg.lr_wb},{cfg.lr_bs},{cfg.lr_ls},{cfg.lrs_gamma},{cfg.lrs_stepsize})_({cfg.relu_epochs},{cfg.bspline_epochs},{cfg.both_epochs},{cfg.comp_relu},{cfg.lspline_epochs})_{cfg.runs}"
     else:
-        out = f"{cfg.layers}_({cfg.lr_wb},{cfg.lr_bs})_({cfg.relu_epochs},{cfg.spline_epochs},{cfg.both_epochs},{cfg.comp_relu})_{cfg.runs}"
+        out = f"{cfg.layers}_({cfg.lr_wb},{cfg.lr_bs},{cfg.lr_ls})_({cfg.relu_epochs},{cfg.bspline_epochs},{cfg.both_epochs},{cfg.comp_relu},{cfg.lspline_epochs})_{cfg.runs}"
 
     if(cfg.add_to_out != ""):
         out += "_" + cfg.add_to_out

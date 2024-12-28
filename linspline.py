@@ -14,15 +14,11 @@ class LSplineFromBSpline(nn.Module):
         super(LSplineFromBSpline, self).__init__()
 
         self.layers = nn.Sequential()
-
         for layer in bspline_layers:
-
             if(type(layer) is deepsplines.ds_modules.deepBspline.DeepBSpline):
                 layer_locs = layer.grid_tensor.detach()
                 layer_coeffs = layer.coefficients_vect.view(layer.num_activations, layer.size).detach()
-
                 self.layers.append(LinearSplineLayer(layer_locs, layer_coeffs))
-
             else:
                 self.layers.append(layer)
 
@@ -116,6 +112,10 @@ class LinearSplineLayer(nn.Module):
     def __init__(self, locs, coeffs):
         super(LinearSplineLayer, self).__init__()
         # Assume locs and coeffs are lists of tensors
+
+        locs = locs.contiguous()
+        coeffs = coeffs.contiguous()
+
         self.register_buffer('locs', locs)        # Shape: (num_splines, num_locs)
         self.register_buffer('coeffs', coeffs)
 
@@ -153,8 +153,6 @@ class LinearSplineLayer(nn.Module):
     def __repr__(self):
         return (f"{self.__class__.__name__}({len(self.locs)} locs, "
                 f"{len(self.coeffs)} coeffs, mode='fc')")
-
-    
 
 def forward(self, x):
     # Transpose to group by splines
