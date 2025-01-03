@@ -1,11 +1,11 @@
 from tabulate import tabulate
 from datetime import datetime, timedelta
 import numpy as np
-import math
+import math, json
 import matplotlib.pyplot as plt
 from scipy.interpolate import BSpline
-import json
 from itertools import accumulate
+import linspline
 
 def time_str_to_timedelta(time_str):
     return datetime.strptime(time_str, "%H:%M:%S.%f") - datetime(1900, 1, 1)
@@ -312,13 +312,22 @@ def calc_bspline_flops(model):
   K = 1 
 
   fwd_spline_flops = 0
-  for act in model.get_deepspline_activations(): # for each layer
-      num_activations = len(act['locations']) # the number of bsplines on that layer
-      G = len(act['locations'][0])-1 # number of control points per activation
+  for layer in model.get_deepspline_activations(): # for each layer
+      num_activations = len(layer['locations']) # the number of bsplines on that layer
+      G = len(layer['locations'][0])-1 # number of control points per activation
       # all activations are identical, so we can just multiply through
       fwd_spline_flops += (d_in * d_out * (9*K * (G + 1.5 * K) + 2 * G - 2.5 * K + 3)) * num_activations
 
   return fwd_spline_flops
+
+def calc_lspline_flops(model):
+    # FLOPS estimation based on implementation
+    flops = 0
+    for layer in model.get_layers():
+        if(layer is linspline.LinearSplineLayer):
+            flops += layer.get_flops()
+    return flops
+
 
 def point_dist(p1, p2):
     x1, y1 = p1
@@ -398,6 +407,8 @@ def plot_multiple2(model_paths, x="time", xlim=None, ylim=None, xmin=None, ymin=
         plot_times = np.mean(run_times, axis=0) # average over runs: [e1, e2, e3, ...]
 
         cumul_times = list(accumulate(plot_times))# cumulative sum at each point
+        # print(plot_times)
+        # print(cumul_times)
         
         if m[3] == "avg":
             plot_losses = np.mean(values, axis=0)

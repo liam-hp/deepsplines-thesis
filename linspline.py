@@ -31,10 +31,84 @@ class LSplineFromBSpline(nn.Module):
         return x
 
 class LinearSplineLayer(nn.Module):
-    '''
+
+    def __init__(self, locs, coeffs):
+        super(LinearSplineLayer, self).__init__()
+        # Assume locs and coeffs are lists of tensors
+
+        self.locs = nn.Parameter(locs.contiguous())
+        self.coeffs = nn.Parameter(coeffs.contiguous())
+        # self.num_knots = self.locs.size(0) # pre-computing to save time
+
+    def forward(self, x):
+
+        # x is (batch_size, num_splines)
+        group_by_splines = x.transpose(0, 1)  # Shape: (num_splines, batch_size)
+        
+        idx = torch.searchsorted(self.locs, group_by_splines, right=False) - 1 # get the spline indices for each input
+        idx = idx.clamp(0, self.locs.size(1) - 2) # make sure we stay in bounds
+        
+        # spline_indices = torch.arange(self.num_knots, device=x.device).unsqueeze(1) 
+        
+        # x0 and x1 represent the left and right boundaries of the spline segments for each x in the batch.
+
+        # x0 = self.locs[spline_indices, idx]
+        # x1 = self.locs[spline_indices, idx + 1]
+
+        x0 = torch.gather(self.locs, 1, idx)
+        x1 = torch.gather(self.locs, 1, idx+1)
+
+        # y0 and y1 are the corresponding coefficients at x0 and x1.
+
+        # y0 = self.coeffs[spline_indices, idx]
+        # y1 = self.coeffs[spline_indices, idx + 1]
+
+        y0 = torch.gather(self.coeffs, 1, idx)
+        y1 = torch.gather(self.coeffs, 1, idx + 1)
+        
+        # 7 flops:
+        t = (group_by_splines - x0) / (x1 - x0 + 1e-6) # 1e-6 to prevent division by zero
+        out = y0 + t * (y1 - y0)
+        
+        return out.transpose(0, 1)  # Shape: (batch_size, num_splines)
+
+    def get_flops(self):
+        return 7 * len(self.coeffs)
+
+'''
+
+#! Register buffer so they're not considered when computing
+
+self.register_buffer("locs", locs)
+self.register_buffer("coeffs", coeffs)
+
+#! torch.gather?
+
+'''
+
+
+class LinearSpline():
+    def __init__(self, locs, coeffs):
+        super(LinearSpline, self).__init__()
+        self.locs = locs
+        self.coeffs = coeffs
+        
+        return
+
+    def forward(self, x):
+
+        raise NotImplementedError
+
+    def get_locs_coeffs(self):
+        return (self.locs, self.coeffs)
+    
+
+'''
+
+Other LSpline Implementations
+
 
     my implementation:
-
 
     def __init__(self, locs, coeffs, mode="fc"):
 
@@ -106,90 +180,4 @@ class LinearSplineLayer(nn.Module):
             out = y0 + t * (y1 - y0)
             
             return out.transpose(0, 1)
-    '''
-
-
-    def __init__(self, locs, coeffs):
-        super(LinearSplineLayer, self).__init__()
-        # Assume locs and coeffs are lists of tensors
-
-        locs = locs.contiguous()
-        coeffs = coeffs.contiguous()
-
-        self.register_buffer('locs', locs)        # Shape: (num_splines, num_locs)
-        self.register_buffer('coeffs', coeffs)
-
-    def forward(self, x):
-
-        # ! faster
-
-        # Assume x is (batch_size, num_splines)
-        group_by_splines = x.transpose(0, 1)  # Shape: (num_splines, batch_size)
-        
-        locs = self.locs  # Shape: (num_splines, num_locs)
-        coeffs = self.coeffs  # Shape: (num_splines, num_coeffs)
-        
-        idx = torch.searchsorted(locs, group_by_splines, right=False) - 1
-        idx = idx.clamp(0, locs.size(1) - 2)
-        
-        num_splines, batch_size = group_by_splines.shape
-        spline_indices = torch.arange(num_splines, device=x.device).unsqueeze(1)
-        
-        x0 = locs[spline_indices, idx]        # Shape: (num_splines, batch_size)
-        x1 = locs[spline_indices, idx + 1]
-        y0 = coeffs[spline_indices, idx]
-        y1 = coeffs[spline_indices, idx + 1]
-        
-        epsilon = 1e-6
-        t = (group_by_splines - x0) / (x1 - x0 + epsilon)
-        out = y0 + t * (y1 - y0)
-        
-        return out.transpose(0, 1)  # Shape: (batch_size, num_splines)
-
-    
-    def get_locs_coeffs(self):
-        return (self.locs, self.coeffs)
-    
-    def __repr__(self):
-        return (f"{self.__class__.__name__}({len(self.locs)} locs, "
-                f"{len(self.coeffs)} coeffs, mode='fc')")
-
-def forward(self, x):
-    # Transpose to group by splines
-    group_by_splines = x.transpose(0, 1)  # Shape: (num_splines, batch_size)
-    
-    # Stack locs and coeffs for batch processing
-    locs = torch.stack(self.locs)          # Shape: (num_splines, num_locs)
-    coeffs = torch.stack(self.coeffs)      # Shape: (num_splines, num_coeffs)
-    
-    # Find interval indices for all splines at once
-    idx = torch.searchsorted(locs, group_by_splines, right=False) - 1
-    idx = idx.clamp(0, locs.size(1) - 2)
-    
-    # Gather x0, x1, y0, y1 using advanced indexing
-    batch_indices = torch.arange(locs.size(0)).unsqueeze(1).to(x.device)
-    x0 = locs[batch_indices, idx]
-    x1 = locs[batch_indices, idx + 1]
-    y0 = coeffs[batch_indices, idx]
-    y1 = coeffs[batch_indices, idx + 1]
-    
-    # Compute interpolation factor and interpolate
-    t = (group_by_splines - x0) / (x1 - x0)
-    out = y0 + t * (y1 - y0)
-    
-    return out.transpose(0, 1)
-class LinearSpline():
-    def __init__(self, locs, coeffs):
-        super(LinearSpline, self).__init__()
-
-        self.locs = locs
-        self.coeffs = coeffs
-        
-        return
-
-    def forward(self, x):
-
-        raise NotImplementedError
-
-    def get_locs_coeffs(self):
-        return (self.locs, self.coeffs)
+'''
