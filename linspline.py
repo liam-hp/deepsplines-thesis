@@ -73,7 +73,8 @@ class LinearSplineLayer(nn.Module):
         return out.transpose(0, 1)  # Shape: (batch_size, num_splines)
 
     def get_flops(self):
-        return 7 * len(self.coeffs)
+        return 7 * len(self.coeffs) * len(self.coeffs[0])
+        # 7 * number of splines * len(self.coeffs)
 
 '''
 

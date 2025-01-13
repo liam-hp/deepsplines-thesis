@@ -26,11 +26,13 @@ both_epochs: 0
 lspline_epochs: 0
 comp_relu: 0 # if switching to spline, save a version that you train on ReLU from the same initial model
 
-lr_wb: 0.001 # initial learning rate for weights and biases
-lr_bs: 0.0001 # learning rate for bspline
-lr_ls: 0.0001 # learning rate for linear spline
+lr_wb: 0.001 # (initial) learning rate for weights and biases
+lr_bs: 0.0001 # (initial) learning rate for bspline
+lr_ls: 0.0001 # (initial) learning rate for linear spline
 lrs: "none" # learning rate scheduler
 lrs_gamma: .9
 lrs_stepsize: 5
+
+output_dir: None
 
 add_to_out: ""
