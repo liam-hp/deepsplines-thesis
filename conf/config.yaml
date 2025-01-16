@@ -3,14 +3,14 @@ defaults:
 
 hydra:
   launcher:
-    partition: standard
+    partition: long
     cpus_per_task: 1
     mem_gb: 8
-    timeout_min: 2880
-    # additional_parameters:
-    #   nodelist: node021
+    timeout_min: 10080 # max: 7 days
+    additional_parameters:
+      nodelist: node022
 
-runs: 10
+runs: 100
 threads: 1
 outlier_thresh: 0.5 # percentage above the avg a run has to be to qualify as an outliar
 
@@ -33,6 +33,7 @@ lrs: "none" # learning rate scheduler
 lrs_gamma: .9
 lrs_stepsize: 5
 
-output_dir: None
+output_dir: "."
+bspline_order: ["bspline", "both"]
 
 add_to_out: ""

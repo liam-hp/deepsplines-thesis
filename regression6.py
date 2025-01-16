@@ -62,8 +62,8 @@ def training_run(mparams, tparams, X, y):
     # cr_fwd_lat = -1
 
     model_save_code = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-    
-    for arch in ["relu", "bspline", "both", "lspline"]:
+
+    for arch in ["relu", tparams.bspline_order[0], tparams.bspline_order[1], "lspline"]:
         
         epochs = 0
 
@@ -82,27 +82,29 @@ def training_run(mparams, tparams, X, y):
             if(arch == "bspline"):
                 if(tparams.bspline_epochs == 0):
                     continue
-                if(tparams.relu_epochs > 0): # if we pretrained on ReLU, load those weights
-                    model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
-                    model.load_state_dict(torch.load(f"./temp_models/{model_save_code}.pt", weights_only=True), strict=False)
-                else:
-                    model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
-                epochs = tparams.bspline_epochs
+                if(tparams.bspline_order[0]=="bspline" or tparams.both_epochs==0):
+                    # bspline before both (or no both)
 
+                    if(tparams.relu_epochs > 0): # if we pretrained on ReLU, load those weights
+                        model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
+                        model.load_state_dict(torch.load(f"./temp_models/{model_save_code}.pt", weights_only=True), strict=False)
+                        # both went first
+                    else:
+                        model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
+                epochs = tparams.bspline_epochs
             if(arch == "both"):
                 if(tparams.both_epochs == 0):
                     continue
-                elif(tparams.bspline_epochs == 0):
+                elif(tparams.bspline_order[0]=="both" or tparams.bspline_epochs==0):
+                    # both before bspline or no bspline
+
                     if(tparams.relu_epochs > 0): # if we pretrained on ReLU, load those weights
                         model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
                         model.load_state_dict(torch.load(f"./temp_models/{model_save_code}.pt", weights_only=True), strict=False)
                     else:
                         model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
-
-                # else bspline_epochs > 0, we just continue training that model but unfreeze weights and biases
                 epochs = tparams.both_epochs
 
-            
             optimizer = optim.Adam(model.parameters_no_deepspline(), lr=tparams.lr_wb)
             aux_optimizer = optim.Adam(model.parameters_deepspline(), lr=tparams.lr_bs)
 
@@ -114,12 +116,13 @@ def training_run(mparams, tparams, X, y):
             lmbda = 1e-4 # regularization weight
             lipschitz = False # lipschitz control
         elif(arch == "lspline"):
+            if(tparams.lspline_epochs == 0):
+                continue
             if(tparams.bspline_epochs > 0 or tparams.both_epochs > 0):
                 epochs = tparams.lspline_epochs
                 bspline_layers=model.get_layers()
                 model = linspline.LSplineFromBSpline(bspline_layers)
                 optimizer = optim.Adam(model.parameters(), lr=tparams.lr_ls)
-
             else:
                 continue
         
@@ -175,7 +178,7 @@ def training_run(mparams, tparams, X, y):
             # validation loss (on the whole val dataset)
             model.eval()
             y_pred = model(X_test) # pass in all the validation data
-            loss = float(loss_fn(y_pred, y_test))
+            loss = float(loss_fn(y_pred, y_test)) # validation loss on the whole dataset
             
             if(tparams.comp_relu > 0 and arch == "relu"):
                 in_pretraining = epoch < length - tparams.comp_relu - 1
@@ -212,6 +215,7 @@ def training_run(mparams, tparams, X, y):
 
     train_times2 = [t.seconds+(t.microseconds / 1000 / 1000) for t in train_times]
     cr_train_times2 = [t.seconds+(t.microseconds / 1000 / 1000) for t in cr_train_times]
+    
     return model, train_history, val_history, train_times2, cr_val_history, cr_train_history, cr_train_times2
 
 
@@ -262,6 +266,7 @@ def my_app(cfg: DictConfig) -> None:
         lrs_gamma = cfg.lrs_gamma,
         lrs_stepsize = cfg.lrs_stepsize,
         comp_relu = cfg.comp_relu,
+        bspline_order = cfg.bspline_order,
     )
 
     print("Init complete.")
@@ -269,7 +274,6 @@ def my_app(cfg: DictConfig) -> None:
     for r in range(cfg.runs):
         start_time = datetime.now()
         model, train_history, val_history, train_times, cr_val_history, cr_train_history, cr_train_times = training_run(mparams, tparams, X, y)
-        print(train_times)
 
         run_validations.append(val_history)
         run_history.append(train_history)
@@ -353,20 +357,22 @@ def my_app(cfg: DictConfig) -> None:
     else:
         out = f"{cfg.layers}_({cfg.lr_wb},{cfg.lr_bs},{cfg.lr_ls})_({cfg.relu_epochs},{cfg.bspline_epochs},{cfg.both_epochs},{cfg.comp_relu},{cfg.lspline_epochs})_{cfg.runs}"
 
+    if(cfg.bspline_order == ["both","bspline"]):
+        out += "_bothfirst"
+
+    if(cfg.cpoints != 3):
+        out += f"_{cfg.cpoints}"
+
     if(cfg.add_to_out != ""):
         out += "_" + cfg.add_to_out
 
-    if(cfg.output_dir == None):
-        with open(f'saved/{out}.json', 'w') as f:
-            json.dump(data, f)
-    else:
-        if not os.path.exists(f'saved/{cfg.output_dir}'):
-            os.makedirs(f'saved/{cfg.output_dir}')
-            
-        with open(f'saved/{cfg.output_dir}/{out}.json', 'w') as f:
-            json.dump(data, f)
+    if not os.path.exists(f'saved/{cfg.output_dir}'):
+        os.makedirs(f'saved/{cfg.output_dir}')
         
-    print(f"Saved to saved/{out}")
+    with open(f'saved/{cfg.output_dir}/{out}.json', 'w') as f:
+        json.dump(data, f)
+
+    print(f"Saved to saved/{cfg.output_dir}/{out}")
 
     return
 

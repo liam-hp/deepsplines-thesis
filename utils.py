@@ -9,6 +9,8 @@ import linspline
 from models import LinearReLU, LinearBSpline
 from IPython.display import clear_output
 import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
 
 def time_str_to_timedelta(time_str):
     return datetime.strptime(time_str, "%H:%M:%S.%f") - datetime(1900, 1, 1)
@@ -331,7 +333,6 @@ def calc_lspline_flops(model):
             flops += layer.get_flops()
     return flops
 
-
 def point_dist(p1, p2):
     x1, y1 = p1
     x2, y2 = p2
@@ -467,7 +468,6 @@ def plot_multiple2(model_paths, x="time", xlim=None, ylim=None, xmin=None, ymin=
     for (r, c), cell in tbl.get_celld().items():
         cell.set_text_props(ha='center', va='center')
 
-
 def plot_multiple_3(model_paths, model_names=None, title=None, x="time", y_ax="Val Loss", xlim=None, ylim=None, xmin=None, ymin=None, vbars=[], hide_legend=False):
     
     fig, (ax1, ax2) = plt.subplots(
@@ -558,7 +558,181 @@ def plot_multiple_3(model_paths, model_names=None, title=None, x="time", y_ax="V
     for (r, c), cell in tbl.get_celld().items():
         cell.set_text_props(ha='center', va='center')
 
+def plot_multiple_4(model_paths, aes=None, title=None, x="time", y_ax="Val Loss", xlim=None, ylim=None, xmin=None, ymin=None, vbars=[], hide_legend=False):
+    
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2,
+        figsize=(10, 5),
+        gridspec_kw={'width_ratios': [3, 1]}
+    )
+    
+    if(title):
+        fig.suptitle(title)
 
+    table_data = []
+
+    for i, m in enumerate(model_paths):
+        with open(f'saved/{m[0]}/{m[1]}.json', 'r') as file:
+            model_data = json.load(file)
+
+        values = np.array(model_data[m[2]])
+        
+        if(m[2][:2] == "cr"):
+            run_times = np.array(model_data['cr_times'])
+        else:
+            run_times = np.array(model_data['times']) # this is timing per epoch per run [r1, r2, r3, ..] w/ r1=[e1, e2, e3, ...]
+        
+        plot_times = np.mean(run_times, axis=0) # average over runs: [e1, e2, e3, ...]
+
+        cumul_times = list(accumulate(plot_times))# cumulative sum at each point
+        # print(plot_times)
+        # print(cumul_times)
+        
+        if m[3] == "avg":
+            plot_losses = np.mean(values, axis=0)
+        elif m[3] == "median":
+            plot_losses = np.median(values, axis=0)
+        else:  # best
+            plot_losses = np.min(values, axis=0)
+
+
+        line_style="-"
+        if(aes == None):
+            model_name = f'{m[1]},{m[2]},{m[3]}'
+        else:
+            model_name = aes[i][0]
+            line_style=aes[i][1]
+            color=aes[i][2]
+        
+        if x == "time":
+            ax1.plot(
+                cumul_times, plot_losses,
+                label=model_name,
+                color=color, 
+                linestyle=line_style, 
+                lw=1, alpha=.8
+            )
+        else:
+            ax1.plot(
+                plot_losses,
+                label=model_name,
+                color=color,
+                linestyle=line_style,
+                lw=1, alpha=.8
+            )
+
+        # Append only the final loss to the table
+        table_data.append([model_name, f"{plot_losses[-1]:.03f}"])
+        
+    ax1.set_ylabel(y_ax, labelpad=10)
+    ax1.set_xlabel("Time (s)" if x == "time" else "Epochs", labelpad=10)
+    
+    if ylim is not None:
+        ax1.set_ylim(0 if ymin==None else ymin, ylim)
+    if xlim is not None:
+        ax1.set_xlim(0 if xmin==None else xmin, xlim)
+
+    for (loc, col) in vbars:
+        ax1.axvline(x=loc, color=col, linestyle='--')
+    
+    if(not hide_legend):
+        ax1.legend()
+
+    ax2.axis('off')
+    tbl = ax2.table(
+        cellText=table_data,
+        colLabels=["Model", "Final Loss"],
+        loc='center'
+    )
+
+    tbl.scale(1.5, 1.5)
+
+    # table styling
+    for i, row in enumerate(table_data):
+        tbl[(i+1, 0)]._text.set_color(aes[i][2])
+        tbl[(i+1, 1)]._text.set_color(aes[i][2])
+    for (r, c), cell in tbl.get_celld().items():
+        cell.set_text_props(ha='center', va='center')
+
+def plot_seaborn(
+        model_paths, aes=None, 
+        palette="bright", title=None, x="time", y_ax="MSE Loss", xlim=None, ylim=None, xmin=None, ymin=None, 
+        vbars=[], hide_legend=False, cutoff=None):
+    
+    sns.set_theme(
+        palette=palette,
+        style="whitegrid",
+    )
+
+    # Data collection for plotting
+    plot_data = []
+
+    for i, m in enumerate(model_paths):
+        with open(f'saved/{m[0]}/{m[1]}.json', 'r') as file:
+            model_data = json.load(file)
+
+        values = np.array(model_data[m[2]])
+        
+        if m[2][:2] == "cr":
+            run_times = np.array(model_data['cr_times'])
+        else:
+            run_times = np.array(model_data['times'])
+
+        plot_times = np.mean(run_times, axis=0)
+        cumul_times = list(accumulate(plot_times))
+
+        if(cutoff != None):
+            values = values[:cutoff]
+            cumul_times = cumul_times[:cutoff]
+
+        if m[3] == "avg":
+            plot_losses = np.mean(values, axis=0)
+        elif m[3] == "med":
+            plot_losses = np.median(values, axis=0)
+        elif m[3] == "best":
+            plot_losses = np.min(values, axis=0)
+
+        print(f"Avg over last 5 epochs on {aes[i][0]},{aes[i][1]},{m[3]}: {np.mean(plot_losses[-5])} in {cumul_times[-1]}s")
+        
+        for t, l in zip((cumul_times if x == "time" else range(len(plot_losses))), plot_losses):
+            plot_data.append({
+                "Time" if x == "time" else "Epoch": t,
+                y_ax: l,
+                "Arch": aes[i][0],
+                "Layers": aes[i][1],
+            })
+
+    # Convert to DataFrame
+    df = pd.DataFrame(plot_data)
+
+    # Plotting with Seaborn
+    plt.figure(figsize=(10, 6))
+    x_col = "Time" if x == "time" else "Epoch"
+
+    ax = sns.lineplot(data=df, x=x_col, y=y_ax, hue="Arch", style="Layers", markers=False)
+
+    if title:
+        ax.set_title(title, fontsize=14, pad=15)
+    
+    ax.set_xlabel("Time (s)" if x == "time" else "Epochs", labelpad=10)
+    ax.set_ylabel(y_ax, labelpad=10)
+
+    if ylim is not None:
+        ax.set_ylim(ymin if ymin is not None else 0, ylim)
+    if xlim is not None:
+        ax.set_xlim(xmin if xmin is not None else 0, xlim)
+
+    # Add vertical bars
+    for (loc, col) in vbars:
+        plt.axvline(x=loc, color=col, linestyle="--")
+
+    # Hide legend if needed
+    if hide_legend:
+        ax.legend_.remove()
+
+    # Display the plot
+    plt.tight_layout()
+    plt.show()
 
 
 
@@ -593,6 +767,8 @@ def get_model_params(model, input_size=8, batch_size=10):
 
 def graph_params_x_lat(archs):
 
+    # switch params and architectures
+
     input_dim = 8
     batch_size = 10
     
@@ -606,58 +782,76 @@ def graph_params_x_lat(archs):
 
         reluModel = LinearReLU(arch)
         # run_layer(reluModel.layers[1], input_dim, batch_size)
-        relu_results.append((get_model_params(reluModel), run_layer(reluModel, input_dim, batch_size)))
+        relu_results.append((arch, run_layer(reluModel, input_dim, batch_size)))
 
         bsplineModel = LinearBSpline(arch, 3, 1, "relu")
-        spline_params = get_model_params(bsplineModel) #! not actually true... need to figure out why bspline has fewer params
+        # spline_params = get_model_params(bsplineModel) #! not actually true... need to figure out why bspline has fewer params
 
-        archs_pos.append((arch, spline_params))
+        # archs_pos.append((arch, spline_params))
 
         # run_layer(bsplineModel.get_layers()[1], input_dim, batch_size)
-        bspline_results.append((spline_params, run_layer(bsplineModel, input_dim, batch_size)))
+        bspline_results.append((arch, run_layer(bsplineModel, input_dim, batch_size)))
 
         linModel = linspline.LSplineFromBSpline(bsplineModel.get_layers())
         # run_layer(linModel.get_layers()[1], input_dim, batch_size)
-        lspline_results.append((spline_params, run_layer(linModel, input_dim, batch_size)))
+        lspline_results.append((arch, run_layer(linModel, input_dim, batch_size)))
 
     clear_output()
-    print(relu_results)
-    print(bspline_results)
-    print(lspline_results)
 
     # Assuming relu_results, bspline_results, and lspline_results contain (idx, result) tuples
-    relu_indices = [result[0] for result in relu_results]
+
+    labels = [str(result[0]) for result in relu_results]
     relu_values = [result[1] for result in relu_results]
 
-    bspline_indices = [result[0] for result in bspline_results]
     bspline_values = [result[1] for result in bspline_results]
 
-    lspline_indices = [result[0] for result in lspline_results]
     lspline_values = [result[1] for result in lspline_results]
 
     # Create the plot
     plt.figure(figsize=(10, 6))
 
 
-    arch_colors = generate_colors(len(archs_pos))
-    # plot lines
-    for idx, (arch, params) in enumerate(archs_pos):
-        # Plot a vertical line at each position in spline_params
-        plt.axvline(x=params, label=arch, linestyle='-', color=arch_colors[idx])
-
+    # arch_colors = generate_colors(len(archs_pos))
+    # # plot lines
+    # for idx, (arch, params) in enumerate(archs_pos):
+    #     # Plot a vertical line at each position in spline_params
+    #     plt.axvline(x=params, label=arch, linestyle='-', color=arch_colors[idx])
 
     # Plot each model's results
-    plt.plot(relu_indices, relu_values, label="ReLU Model", marker='o', linestyle='-', color='black')
-    plt.plot(bspline_indices, bspline_values, label="BSpline Model", marker='o', linestyle='-', color='grey')
-    plt.plot(lspline_indices, lspline_values, label="LSpline Model", marker='o', linestyle='-', color='lightgrey')
+    plt.plot(labels, bspline_values, marker='o', linestyle='-', color='blue', label="BSpline Model")
+    plt.plot(labels, lspline_values, marker='o', linestyle='-', color='green', label="LSpline Model")
+    plt.plot(labels, relu_values, marker='o', linestyle='-', color='black', label="ReLU Model")
 
     # Labeling the axes and the plot
-    plt.xlabel("Model Parameters")
+    plt.xlabel("Number of Layers")
     plt.ylabel("Forward Latency")
-    plt.title("Architecture Comparison by Param")
-    plt.legend(loc="lower right")
+    # plt.title("Architecture Comparison: Forward Latency ")
+    plt.legend(loc="best")
+
+    ax = plt.gca()
+    ax.set_xticks(range(len(labels)))        # positions for ticks
+    ax.set_xticklabels(map(lambda x: len(x), archs))   # blank out the default text
 
     # Show the plot
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+
+def plot_activation(sel, r=10):
+
+    acts = {
+        "relu": lambda x: np.maximum(0, x),
+        "sig": lambda x: 1 / (1 + np.exp(-x)),
+        "tanh": lambda x: (np.exp(x) - np.exp(-x)) / (np.exp(x) + np.exp(-x)),
+    }
+
+    x = np.linspace(-1*r, r, 100)
+    out = acts[sel](x)
+    plt.plot(x, out, 'black', label='ReLU')
+    plt.grid(True)
+
+
+        
+
+
+

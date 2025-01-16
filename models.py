@@ -28,14 +28,8 @@ class LinearReLU(nn.Module):
 class LinearBSpline(dsnn.DSModule):
   def __init__(self, layers, s=5, r=4, init="relu", input_size=8):
     super(LinearBSpline, self).__init__()
-
     self.fc_ds = nn.ModuleList()
-    opt_params = {
-            'size': s,
-            'range_': r,
-            'init': init,
-            'save_memory': False
-    }
+    opt_params = {'size': s,  'range_': r, 'init': init, 'save_memory': False}
     self.layers = nn.Sequential()
 
     prev=input_size
@@ -51,5 +45,4 @@ class LinearBSpline(dsnn.DSModule):
     return self.layers
   
   def forward(self, x):
-    x = self.layers(x)
-    return x
+    return self.layers(x)

@@ -11,3 +11,5 @@ conda install matplotlib
 conda install conda-forge::hydra
 
 conda install conda-forge::omegaconf
+
+conda install anaconda::seaborn
