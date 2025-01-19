@@ -681,16 +681,16 @@ def plot_seaborn(
         plot_times = np.mean(run_times, axis=0)
         cumul_times = list(accumulate(plot_times))
 
-        if(cutoff != None):
-            values = values[:cutoff]
-            cumul_times = cumul_times[:cutoff]
-
         if m[3] == "avg":
             plot_losses = np.mean(values, axis=0)
         elif m[3] == "med":
             plot_losses = np.median(values, axis=0)
         elif m[3] == "best":
             plot_losses = np.min(values, axis=0)
+
+        if(cutoff != None):
+            plot_losses = plot_losses[:cutoff]
+            cumul_times = cumul_times[:cutoff]
 
         print(f"Avg over last 5 epochs on {aes[i][0]},{aes[i][1]},{m[3]}: {np.mean(plot_losses[-5])} in {cumul_times[-1]}s")
         
