@@ -11,6 +11,13 @@ from IPython.display import clear_output
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+import utils, importlib
+from models import LinearReLU, LinearBSpline
+import linspline
+from sklearn.datasets import fetch_california_housing
+import time, torch
+from deepspeed.profiling.flops_profiler import get_model_profile
+from torch.utils.data import TensorDataset, DataLoader
 
 def time_str_to_timedelta(time_str):
     return datetime.strptime(time_str, "%H:%M:%S.%f") - datetime(1900, 1, 1)
@@ -734,8 +741,6 @@ def plot_seaborn(
     plt.tight_layout()
     plt.show()
 
-
-
 from deepspeed.profiling.flops_profiler import get_model_profile
 import time, torch
 
@@ -766,8 +771,6 @@ def get_model_params(model, input_size=8, batch_size=10):
     return params
 
 def graph_params_x_lat(archs):
-
-    # switch params and architectures
 
     input_dim = 8
     batch_size = 10
@@ -837,6 +840,65 @@ def graph_params_x_lat(archs):
     plt.tight_layout()
     plt.show()
 
+def graph_params_x_flops(archs):
+
+    input_dim = 8
+    batch_size = 10
+    
+    relu_results = []
+    bspline_results = []
+    lspline_results = []
+
+    
+    for arch in archs:
+        success = [False, False, False]
+        while(False in success):
+            try:
+                relu_results.append((arch, profile_flops("ReLU", arch)[0]))
+                success[0] = True
+            except Exception:
+                print("profile failed... trying again")
+            
+            try:
+                bspline_results.append((arch, profile_flops("BSpline", arch)[0]))
+                success[1] = True
+            except Exception:
+                print("profile failed... trying again")
+
+            try:
+                lspline_results.append((arch, profile_flops("LSpline", arch)[0]))
+                success[2] = True
+            except Exception:
+                print("profile failed... trying again")
+        clear_output()
+        print(f"arch {arch} done")
+
+    clear_output()
+
+    labels = [str(result[0]) for result in relu_results]
+    relu_values = [result[1] for result in relu_results]
+    bspline_values = [result[1] for result in bspline_results]
+    lspline_values = [result[1] for result in lspline_results]
+
+    plt.figure(figsize=(10, 6))
+    
+    plt.plot(labels, bspline_values, marker='o', linestyle='-', color='blue', label="BSpline Model")
+    plt.plot(labels, lspline_values, marker='o', linestyle='-', color='green', label="LSpline Model")
+    plt.plot(labels, relu_values, marker='o', linestyle='-', color='black', label="ReLU Model")
+
+    plt.xlabel("Number of Layers")
+    plt.ylabel("FLOPs")
+    plt.legend(loc="best")
+
+    ax = plt.gca()
+    ax.set_xticks(range(len(labels)))        # positions for ticks
+    ax.set_xticklabels(map(lambda x: len(x), archs))   # blank out the default text
+
+    # Show the plot
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
 def plot_activation(sel, r=10):
 
     acts = {
@@ -850,8 +912,108 @@ def plot_activation(sel, r=10):
     plt.plot(x, out, 'black', label='ReLU')
     plt.grid(True)
 
+def profile_flops(arch, layers, ctrl=3, range_=1, input_size=8, batch_size=10):
 
-        
+    if(arch == "ReLU"):
+        model = LinearReLU(layers)
+    elif(arch == "BSpline"):
+        model = LinearBSpline(layers, ctrl, range_)
+    elif(arch == "LSpline"):
+        model = linspline.LSplineFromBSpline(LinearBSpline(layers, ctrl, range_).get_layers())
+
+    #^ FLOPs and Params
+
+    base_flops, macs, params = get_model_profile(model=model, # model
+            input_shape=(batch_size, input_size), # input shape to the model. If specified, the model takes a tensor with this shape as the only positional argument.
+            args=None, # list of positional arguments to the model.
+            kwargs=None, # dictionary of keyword arguments to the model.
+            print_profile=False, #! prints the model graph with the measured profile attached to each module
+            detailed=True, # print the detailed profile
+            module_depth=-1, # depth into the nested modules, with -1 being the inner most modules
+            top_modules=1, # the number of top modules to print aggregated profile
+            warm_up=10, # the number of warm-ups before measuring the time of each module
+            as_string=True, # print raw numbers (e.g. 1000) or as human-readable strings (e.g. 1k)
+            output_file=None, # path to the output file. If None, the profiler prints to stdout.
+            ignore_modules=None) # the list of modules to ignore in the profiling
+    
+    if(base_flops.__contains__("K")):
+        flops = float(base_flops.replace("K", "").strip()) * 1000 / batch_size
+    elif(base_flops.__contains__("M")):
+        flops = float(base_flops.replace("M", "").strip()) * 1000000 / batch_size
+
+    if(arch == "BSpline"):
+        flops += utils.calc_bspline_flops(model) #! this might be incorrect- need to check w the implementation
+    if(arch == "LSpline"):
+        flops += utils.calc_lspline_flops(model)
+
+    return flops, params
+
+def profile_model(arch, layers, ctrl=3, range_=1, input_size=8, batch_size=10):
+
+    if(arch == "ReLU"):
+        model = LinearReLU(layers)
+    elif(arch == "BSpline"):
+        model = LinearBSpline(layers, ctrl, range_)
+    elif(arch == "LSpline"):
+        model = linspline.LSplineFromBSpline(LinearBSpline(layers, ctrl, range_).get_layers())
+
+    #^ FLOPs and Params
+
+    base_flops, macs, params = get_model_profile(model=model, # model
+            input_shape=(batch_size, input_size), # input shape to the model. If specified, the model takes a tensor with this shape as the only positional argument.
+            args=None, # list of positional arguments to the model.
+            kwargs=None, # dictionary of keyword arguments to the model.
+            print_profile=False, #! prints the model graph with the measured profile attached to each module
+            detailed=True, # print the detailed profile
+            module_depth=-1, # depth into the nested modules, with -1 being the inner most modules
+            top_modules=1, # the number of top modules to print aggregated profile
+            warm_up=10, # the number of warm-ups before measuring the time of each module
+            as_string=True, # print raw numbers (e.g. 1000) or as human-readable strings (e.g. 1k)
+            output_file=None, # path to the output file. If None, the profiler prints to stdout.
+            ignore_modules=None) # the list of modules to ignore in the profiling
+    
+    if(base_flops.__contains__("K")):
+        flops = float(base_flops.replace("K", "").strip()) * 1000 / batch_size
+    elif(base_flops.__contains__("M")):
+        flops = float(base_flops.replace("M", "").strip()) * 1000000 / batch_size
+
+    if(arch == "BSpline"):
+        flops += utils.calc_bspline_flops(model) #! this might be incorrect- need to check w the implementation
+    if(arch == "LSpline"):
+        flops += utils.calc_lspline_flops(model)
+    
+    housing = fetch_california_housing()
+
+    
+    #^ Forward Latency
+
+    per = 1000 # number of sims
+    
+    inpts = [ torch.rand(batch_size, input_size) * 3 - 1.5 for _ in range(per) ]
+    start_time = time.perf_counter()
+    for i in range(per):
+        _ = model(inpts[i]) # model output is irrelevant
+    end_time = time.perf_counter()
+    fwd_lat_sim = round((end_time - start_time) * 1000 * 1000 / per / batch_size, 2) # per sample latency: seconds -> microsec per input
+
+    
+    X, y = torch.tensor(housing.data, dtype=torch.float32), torch.tensor(housing.target, dtype=torch.float32).reshape(-1, 1)
+    # using a dataloader to randomize batching
+    train_dataset = TensorDataset(X, y)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+    inpts = []
+    for i in range(per):
+        inpts.append(next(iter(train_loader))[0]) # pre-emptively do this so it doesn't affect timing
+    
+    start_time = time.perf_counter()
+    for i in range(per):
+        _ = model(inpts[i]) # model output is irrelevant
+    end_time = time.perf_counter()
+    
+    fwd_lat_real = round((end_time - start_time) * 1000 * 1000 / per / batch_size, 2) # per sample latency: seconds -> microsec per input
+    
+    return flops, params, fwd_lat_real
 
 
 
