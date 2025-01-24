@@ -77,8 +77,7 @@ class LinearSplineLayer(nn.Module):
         # 7 * number of splines * len(self.coeffs)
 
 '''
-
-#! Register buffer so they're not considered when computing
+#! Register buffer so they're not considered as params when computing
 
 self.register_buffer("locs", locs)
 self.register_buffer("coeffs", coeffs)
@@ -87,18 +86,32 @@ self.register_buffer("coeffs", coeffs)
 
 '''
 
-
 class LinearSpline():
     def __init__(self, locs, coeffs):
         super(LinearSpline, self).__init__()
-        self.locs = locs
-        self.coeffs = coeffs
-        
-        return
+        self.locs = nn.Parameter(locs.contiguous())
+        self.coeffs = nn.Parameter(coeffs.contiguous())
 
     def forward(self, x):
 
-        raise NotImplementedError
+        idx = torch.searchsorted(self.locs, x, right=False) - 1
+
+        # 2. Clamp to ensure we do not go out of the valid spline range
+        idx = idx.clamp(min=0, max=self.locs.size(0) - 2)
+
+        # 3. Gather left (x0, y0) and right (x1, y1) points for the interval
+        x0 = self.locs[idx]
+        x1 = self.locs[idx + 1]
+        y0 = self.coeffs[idx]
+        y1 = self.coeffs[idx + 1]
+
+        # 4. Compute normalized position t in [0,1] (simple linear interpolation)
+        t = (x - x0) / (x1 - x0 + 1e-6)
+
+        # 5. Linear interpolation
+        out = y0 + t * (y1 - y0)
+
+        return out
 
     def get_locs_coeffs(self):
         return (self.locs, self.coeffs)
@@ -182,3 +195,6 @@ Other LSpline Implementations
             
             return out.transpose(0, 1)
 '''
+
+
+

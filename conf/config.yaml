@@ -20,11 +20,14 @@ range: 1 # range for the spline
 
 batch_size: 10
 
+epoch_specs: ["200R", "10B", "10FB", "10B", "10FB", "10B", "10FB", "10B", "10FB"] # for regression7
+
+comp_relu: 0 # if switching to spline, save a version that you train on ReLU from the same initial model
+
 relu_epochs: 0
 bspline_epochs: 0
 both_epochs: 0
 lspline_epochs: 0
-comp_relu: 0 # if switching to spline, save a version that you train on ReLU from the same initial model
 
 lr_wb: 0.001 # (initial) learning rate for weights and biases
 lr_bs: 0.0001 # (initial) learning rate for bspline

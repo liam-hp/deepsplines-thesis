@@ -149,7 +149,7 @@ def generate_colors(n, opacity=1):
       colors[:, 3] = opacity
       return colors
 
-def plot_bspline(locs, coeffs, degree=1, scale_by_coeff=True, hide_bases=False):
+def plot_bspline(locs, coeffs, degree=1, scale_by_coeff=False, hide_bases=False):
     
     def relu(x):
       return np.maximum(0, x)
@@ -173,14 +173,15 @@ def plot_bspline(locs, coeffs, degree=1, scale_by_coeff=True, hide_bases=False):
     x = np.linspace(min(locs), max(locs), 100)
     y = relu(x)
     ax1.plot(x, y, 'grey', label='ReLU')
-    ax1.legend()
 
     ax1.plot(x, bspline(x), 'black', lw=2, alpha=0.7, label='BSpline')
     for i, (x, y) in enumerate(zip(locs, coeffs)):
         ax1.scatter(x, y, color=colors[i], s=50, zorder=5, label='Control Points')
         ax1.text(x, y, f'$P_{{{i + 1}}}$', color=colors[i], ha='right', va='bottom')
     ax1.grid(True)
+
     ax1.set_title('B-Spline and Control Points')
+    ax1.legend()
 
     if(not hide_bases):
         n_basis = len(knots) - (degree + 1)
@@ -203,7 +204,7 @@ def plot_bspline(locs, coeffs, degree=1, scale_by_coeff=True, hide_bases=False):
                 ax2.set_title('B-Spline Basis Functions (Scaled by Coeffs)')
             else: 
                 ax2.plot(x, y, label=f'$B_{i}(x)$', alpha=0.75, color=colors[i])
-                ax2.set_title('B-Spline Basis Functions (Not Scaled)')
+                ax2.set_title('B-Spline Basis Functions')
         
         ax2.grid(True)
 
@@ -664,6 +665,7 @@ def plot_multiple_4(model_paths, aes=None, title=None, x="time", y_ax="Val Loss"
 def plot_seaborn(
         model_paths, aes=None, 
         palette="bright", title=None, x="time", y_ax="MSE Loss", xlim=None, ylim=None, xmin=None, ymin=None, 
+        aes1="Arch", aes2="Layers",
         vbars=[], hide_legend=False, cutoff=None):
     
     sns.set_theme(
@@ -705,8 +707,8 @@ def plot_seaborn(
             plot_data.append({
                 "Time" if x == "time" else "Epoch": t,
                 y_ax: l,
-                "Arch": aes[i][0],
-                "Layers": aes[i][1],
+                aes1: aes[i][0],
+                aes2: aes[i][1],
             })
 
     # Convert to DataFrame
@@ -716,7 +718,7 @@ def plot_seaborn(
     plt.figure(figsize=(10, 6))
     x_col = "Time" if x == "time" else "Epoch"
 
-    ax = sns.lineplot(data=df, x=x_col, y=y_ax, hue="Arch", style="Layers", markers=False)
+    ax = sns.lineplot(data=df, x=x_col, y=y_ax, hue=aes1, style=aes2, markers=False)
 
     if title:
         ax.set_title(title, fontsize=14, pad=15)
@@ -744,13 +746,12 @@ def plot_seaborn(
 from deepspeed.profiling.flops_profiler import get_model_profile
 import time, torch
 
-def run_layer(layer, input_dim, batch_size):
+def run_layer(layer, input_dim, batch_size, num_inputs):
     #print(layer)
     start_time = time.perf_counter()
-    n=1000
-    inputs = [ torch.rand(batch_size, input_dim) * 3 - 1.5 for _ in range(n) ]
+    inputs = [ torch.rand(batch_size, input_dim) * 3 - 1.5 for _ in range(num_inputs) ]
     # print("Example input: ", inputs[0])
-    for i in range(n):
+    for i in range(num_inputs):
         _ = layer(inputs[i])
     return time.perf_counter() - start_time # time to process n inputs
 
@@ -899,7 +900,7 @@ def graph_params_x_flops(archs):
     plt.tight_layout()
     plt.show()
 
-def plot_activation(sel, r=10):
+def plot_static_activation(sel, r=10):
 
     acts = {
         "relu": lambda x: np.maximum(0, x),
@@ -1016,4 +1017,306 @@ def profile_model(arch, layers, ctrl=3, range_=1, input_size=8, batch_size=10):
     return flops, params, fwd_lat_real
 
 
+def relu(x):
+    return np.maximum(0, x)
 
+def plot_bsplines(locs_list, coeffs_list, ncols=2, degree=1, scale_by_coeff=True, hide_bases=False):
+    
+    n = len(locs_list)
+
+    # Determine the number of rows based on number of columns
+    nrows = int(np.ceil(n / ncols))
+
+    # Create the subplots
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, 
+                             figsize=(6*ncols, 4.5*nrows), 
+                             squeeze=False)  # squeeze=False to keep 2D array
+
+    # Flatten axes for easy iteration
+    axes_flat = axes.ravel()
+
+    for i in range(n):
+        locs = locs_list[i]
+        coeffs = coeffs_list[i]
+        ax = axes_flat[i]
+
+        # Build the knot vector with repeated endpoints
+        knots = np.concatenate((
+            [locs[0]] * (degree + 1), 
+            locs[1:-1], 
+            [locs[-1]] * (degree + 1)
+        ))
+        
+        # Construct the B-spline
+        bspline = BSpline(knots, coeffs, degree)
+
+        # Generate colors for control points
+        colors = generate_colors(len(coeffs))
+
+        # Plot ReLU on the same range for reference
+        x_plot = np.linspace(min(locs), max(locs), 200)
+        ax.plot(x_plot, relu(x_plot), 'grey', label='ReLU')
+
+        # Plot the B-spline
+        ax.plot(x_plot, bspline(x_plot), 'k', lw=2, alpha=0.7, label='BSpline')
+        
+        # Scatter the control points
+        for j, (lx, ly) in enumerate(zip(locs, coeffs)):
+            ax.scatter(lx, ly, color=colors[j], s=50, zorder=5)
+            ax.text(lx, ly, f'$P_{{{j+1}}}$', color=colors[j], 
+                    ha='right', va='bottom', fontsize=9)
+
+        ax.set_title(f'B-Spline #{i+1}')
+        ax.legend()
+        ax.grid(True)
+
+    # Hide any unused subplots if locs_list and coeffs_list are not square
+    for i in range(n, nrows*ncols):
+        axes_flat[i].axis('off')
+
+    plt.tight_layout()
+    plt.show()
+    # return fig, axes
+
+    import torch
+
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.model_selection import train_test_split
+import sys, os
+sys.path.insert(0, os.path.abspath('../DeepSplines'))
+import deepsplines
+
+def train_model_plot_layer_activations(layers=[8], epochs={"relu": 0, "both": 0, "bspline": 0}, ncols=4):
+
+    # Load the data
+    housing = fetch_california_housing()
+    X, y = housing.data, housing.target
+
+    # train-test split of the dataset
+    X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.85, shuffle=True)
+
+    X_train = torch.tensor(X_train, dtype=torch.float32)
+    y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1)
+
+    X_test = torch.tensor(X_test, dtype=torch.float32)
+    y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1)
+
+    # using a dataloader to randomize batching
+    train_dataset = TensorDataset(X_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True)
+
+
+
+    bsm = LinearBSpline(layers, 3, 1, "relu")
+    optimizer = optim.Adam(bsm.parameters_no_deepspline(), lr=0.001)
+    aux_optimizer = optim.Adam(bsm.parameters_deepspline(), lr=0.0001)
+    loss_fn = nn.MSELoss()  # mean square error
+    lmbda = 1e-4 # regularization weight
+
+    print("Init complete")
+
+    bsm.train()
+    for mode in ["relu", "both", "bspline"]:
+        print(f"Training {mode}")
+        for epoch in range(epochs[mode]):
+            rloss = 0
+            for X_batch, y_batch in train_loader:
+                if mode in ["relu", "both"]:
+                    optimizer.zero_grad()
+                if mode in ["bspline", "both"]:
+                    aux_optimizer.zero_grad()
+
+                y_pred = bsm(X_batch)
+                loss = loss_fn(y_pred, y_batch)
+                loss2 = loss + lmbda * bsm.TV2()
+                loss2.backward()
+                if mode in ["relu", "both"]:
+                    optimizer.step()
+                if mode in ["bspline", "both"]:
+                    aux_optimizer.step()
+                rloss += loss
+            if(epoch % 5 == 0):
+                print(f"Epoch {epoch}: {rloss}")
+    
+    print("All training complete")
+
+    layer_locs = []
+    layer_coeffs = []
+
+    zeroed_count = 0
+
+    for layer in bsm.get_layers():
+        if(type(layer) is deepsplines.ds_modules.deepBspline.DeepBSpline):
+            coeffs = layer.coefficients_vect.view(layer.num_activations, layer.size).detach()
+            layer_locs.append(layer.grid_tensor.detach())
+            layer_coeffs.append(coeffs)
+            
+            if(torch.sum(torch.abs(coeffs)) < .1): # then we say its zeroed
+                zeroed_count += 1
+
+    layer_to_plot = 0
+    utils.plot_bsplines(layer_locs[layer_to_plot], layer_coeffs[layer_to_plot], ncols)
+
+def train_models_count_zeroed_AFs(
+        save_output = "zeroed_info",
+        runs = 1, 
+        layers=[[8], [24, 8], [24, 48, 24, 8]], 
+        epochs={"relu": 200, "both": 0, "bspline": 10},
+        zero_thres = 0.05
+    ):
+
+    # Load the data
+    housing = fetch_california_housing()
+    X, y = housing.data, housing.target
+
+    losses = {}
+    zeroed_counter = {}
+
+    for l in layers:
+
+        losses[str(l)] = []
+        zeroed_counter[str(l)] = []
+
+        for r in range(runs): 
+
+            losses[str(l)].append([])
+
+            # train-test split of the dataset
+            X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.85, shuffle=True)
+
+            X_train = torch.tensor(X_train, dtype=torch.float32)
+            y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1)
+
+            X_test = torch.tensor(X_test, dtype=torch.float32)
+            y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1)
+
+            # using a dataloader to randomize batching
+            train_dataset = TensorDataset(X_train, y_train)
+            train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True)
+
+            bsm = LinearBSpline(l, 3, 1, "relu")
+            optimizer = optim.Adam(bsm.parameters_no_deepspline(), lr=0.001)
+            aux_optimizer = optim.Adam(bsm.parameters_deepspline(), lr=0.0001)
+            loss_fn = nn.MSELoss()  # mean square error
+            lmbda = 1e-4 # regularization weight
+
+            bsm.train()
+            for mode in ["relu", "both", "bspline"]:
+                for _ in range(epochs[mode]):
+                    rloss = 0
+                    for X_batch, y_batch in train_loader:
+                        if mode in ["relu", "both"]:
+                            optimizer.zero_grad()
+                        if mode in ["bspline", "both"]:
+                            aux_optimizer.zero_grad()
+
+                        y_pred = bsm(X_batch)
+                        loss = loss_fn(y_pred, y_batch)
+                        loss2 = loss + lmbda * bsm.TV2()
+                        loss2.backward()
+                        if mode in ["relu", "both"]:
+                            optimizer.step()
+                        if mode in ["bspline", "both"]:
+                            aux_optimizer.step()
+                        rloss += loss
+                    losses[str(l)][r].append(loss.item())
+
+            layer_locs = []
+            layer_coeffs = []
+            zeroed_count = 0
+
+            for idx,layer in enumerate(bsm.get_layers()):
+                zeroed_counter[str(l)].append([]) # count on a per layer basis
+                if(type(layer) is deepsplines.ds_modules.deepBspline.DeepBSpline):
+                    coeffs = layer.coefficients_vect.view(layer.num_activations, layer.size).detach()
+                    layer_locs.append(layer.grid_tensor.detach())
+                    layer_coeffs.append(coeffs)
+                    
+                    for spline_idx in range(len(coeffs)):
+                        score = torch.sum(torch.abs(coeffs[spline_idx]))
+                        if(score < .05): # then we say its zeroed
+                            zeroed_count += 1
+            
+                    zeroed_counter[str(l)][idx].append(zeroed_count)
+
+    data = {
+        "losses": losses,
+        "zeroed_counter": zeroed_counter,
+        "zero_thres": zero_thres
+
+    }
+
+    with open(f'saved/{save_output}.json', 'w') as f:
+        json.dump(data, f)
+
+def test_cycle_training(layers=[8], wb_epochs=[100,50,50,50], af_epochs=[10,10,10,10], y_clamp=None):
+
+    # Load the data
+    housing = fetch_california_housing()
+    X, y = housing.data, housing.target
+
+    # train-test split of the dataset
+    X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.85, shuffle=True)
+
+    X_train = torch.tensor(X_train, dtype=torch.float32)
+    y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1)
+
+    X_test = torch.tensor(X_test, dtype=torch.float32)
+    y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1)
+
+    # using a dataloader to randomize batching
+    train_dataset = TensorDataset(X_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True)
+
+
+
+    bsm = LinearBSpline(layers, 3, 1, "relu")
+    optimizer = optim.Adam(bsm.parameters_no_deepspline(), lr=0.001)
+    aux_optimizer = optim.Adam(bsm.parameters_deepspline(), lr=0.0001)
+    loss_fn = nn.MSELoss()  # mean square error
+    lmbda = 1e-4 # regularization weight
+
+    print("Init complete")
+
+    save_loss = []
+
+    bsm.train()
+    for cycle in range(len(wb_epochs)):
+        print(f"Training relu {wb_epochs[cycle]}")
+        for _ in range(wb_epochs[cycle]):
+            for X_batch, y_batch in train_loader:
+                optimizer.zero_grad()
+                y_pred = bsm(X_batch)
+                loss = loss_fn(y_pred, y_batch)
+                loss2 = loss + lmbda * bsm.TV2()
+                loss2.backward()
+                optimizer.step()
+            save_loss.append(loss.detach().item())
+        print(f"Loss at end of ReLU cycle {cycle},{wb_epochs[cycle]}: {loss}")
+
+        print(f"Training bspline {af_epochs[cycle]}")
+        for _ in range(af_epochs[cycle]):
+            for X_batch, y_batch in train_loader:
+                aux_optimizer.zero_grad()
+                y_pred = bsm(X_batch)
+                loss = loss_fn(y_pred, y_batch)
+                loss2 = loss + lmbda * bsm.TV2()
+                loss2.backward()
+                aux_optimizer.step()
+            save_loss.append(loss.detach().item())
+        print(f"Loss at end of Bspline cycle {cycle},{af_epochs[cycle]}: {loss}")
+    
+    print("Training complete")
+
+    data = {
+        "Epoch": range(len(save_loss)),
+        "Val Loss": save_loss
+    }
+    df = pd.DataFrame(data)
+
+    return df
+
+
+def CPU_vs_GPU(layers=[8]):
+    return
