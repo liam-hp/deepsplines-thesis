@@ -36,41 +36,28 @@ class LinearSplineLayer(nn.Module):
         super(LinearSplineLayer, self).__init__()
         # Assume locs and coeffs are lists of tensors
 
-        self.locs = nn.Parameter(locs.contiguous())
-        self.coeffs = nn.Parameter(coeffs.contiguous())
-        # self.num_knots = self.locs.size(0) # pre-computing to save time
+        self.locs = nn.Parameter(locs.contiguous(), requires_grad=False)
+        self.coeffs = nn.Parameter(coeffs.contiguous(), requires_grad=False)
 
     def forward(self, x):
 
-        # x is (batch_size, num_splines)
-        group_by_splines = x.transpose(0, 1)  # Shape: (num_splines, batch_size)
-        
-        idx = torch.searchsorted(self.locs, group_by_splines, right=False) - 1 # get the spline indices for each input
-        idx = idx.clamp(0, self.locs.size(1) - 2) # make sure we stay in bounds
-        
-        # spline_indices = torch.arange(self.num_knots, device=x.device).unsqueeze(1) 
-        
-        # x0 and x1 represent the left and right boundaries of the spline segments for each x in the batch.
+        with torch.no_grad():
 
-        # x0 = self.locs[spline_indices, idx]
-        # x1 = self.locs[spline_indices, idx + 1]
+            group_by_splines = x.transpose(0, 1) # transpose the input to pair inputs with the correct neuron activations
+            
+            idx = torch.searchsorted(self.locs, group_by_splines, right=False) - 1 # get the spline indices for each input
+            idx = idx.clamp(0, self.locs.size(1) - 2) # clamp to make sure we stay in bounds
 
-        x0 = torch.gather(self.locs, 1, idx)
-        x1 = torch.gather(self.locs, 1, idx+1)
+            x0 = torch.gather(self.locs, 1, idx)
+            x1 = torch.gather(self.locs, 1, idx+1)
 
-        # y0 and y1 are the corresponding coefficients at x0 and x1.
-
-        # y0 = self.coeffs[spline_indices, idx]
-        # y1 = self.coeffs[spline_indices, idx + 1]
-
-        y0 = torch.gather(self.coeffs, 1, idx)
-        y1 = torch.gather(self.coeffs, 1, idx + 1)
-        
-        # 7 flops:
-        t = (group_by_splines - x0) / (x1 - x0 + 1e-6) # 1e-6 to prevent division by zero
-        out = y0 + t * (y1 - y0)
-        
-        return out.transpose(0, 1)  # Shape: (batch_size, num_splines)
+            y0 = torch.gather(self.coeffs, 1, idx)
+            y1 = torch.gather(self.coeffs, 1, idx + 1)
+            
+            t = (group_by_splines - x0) / (x1 - x0 + 1e-6) # 1e-6 to prevent division by zero
+            out = y0 + t * (y1 - y0)
+            
+            return out.transpose(0, 1)  # Shape: (batch_size, num_splines)
 
     def get_flops(self):
         return 7 * len(self.coeffs) * len(self.coeffs[0])

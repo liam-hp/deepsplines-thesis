@@ -8,7 +8,6 @@ from itertools import accumulate
 import linspline
 from models import LinearReLU, LinearBSpline
 from IPython.display import clear_output
-import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 import utils, importlib
@@ -18,6 +17,14 @@ from sklearn.datasets import fetch_california_housing
 import time, torch
 from deepspeed.profiling.flops_profiler import get_model_profile
 from torch.utils.data import TensorDataset, DataLoader
+
+# from deepspeed.profiling.flops_profiler import get_model_profile #! i think this slows down all runs
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.model_selection import train_test_split
+import sys, os
+sys.path.insert(0, os.path.abspath('../DeepSplines'))
+import deepsplines
 
 def time_str_to_timedelta(time_str):
     return datetime.strptime(time_str, "%H:%M:%S.%f") - datetime(1900, 1, 1)
@@ -736,15 +743,13 @@ def plot_seaborn(
         plt.axvline(x=loc, color=col, linestyle="--")
 
     # Hide legend if needed
+    ax.legend(loc="upper right")
     if hide_legend:
         ax.legend_.remove()
 
     # Display the plot
     plt.tight_layout()
     plt.show()
-
-from deepspeed.profiling.flops_profiler import get_model_profile
-import time, torch
 
 def run_layer(layer, input_dim, batch_size, num_inputs):
     #print(layer)
@@ -904,6 +909,7 @@ def plot_static_activation(sel, r=10):
 
     acts = {
         "relu": lambda x: np.maximum(0, x),
+        "leaky_relu": lambda x: np.where(x > 0, x, 0.1 * x),
         "sig": lambda x: 1 / (1 + np.exp(-x)),
         "tanh": lambda x: (np.exp(x) - np.exp(-x)) / (np.exp(x) + np.exp(-x)),
     }
@@ -1016,7 +1022,6 @@ def profile_model(arch, layers, ctrl=3, range_=1, input_size=8, batch_size=10):
     
     return flops, params, fwd_lat_real
 
-
 def relu(x):
     return np.maximum(0, x)
 
@@ -1079,13 +1084,6 @@ def plot_bsplines(locs_list, coeffs_list, ncols=2, degree=1, scale_by_coeff=True
     # return fig, axes
 
     import torch
-
-import torch.nn as nn
-import torch.optim as optim
-from sklearn.model_selection import train_test_split
-import sys, os
-sys.path.insert(0, os.path.abspath('../DeepSplines'))
-import deepsplines
 
 def train_model_plot_layer_activations(layers=[8], epochs={"relu": 0, "both": 0, "bspline": 0}, ncols=4):
 
@@ -1161,7 +1159,7 @@ def train_model_plot_layer_activations(layers=[8], epochs={"relu": 0, "both": 0,
 def train_models_count_zeroed_AFs(
         save_output = "zeroed_info",
         runs = 1, 
-        layers=[[8], [24, 8], [24, 48, 24, 8]], 
+        layers=[8], 
         epochs={"relu": 200, "both": 0, "bspline": 10},
         zero_thres = 0.05
     ):
@@ -1170,81 +1168,75 @@ def train_models_count_zeroed_AFs(
     housing = fetch_california_housing()
     X, y = housing.data, housing.target
 
-    losses = {}
-    zeroed_counter = {}
+    losses = []
+    zeroed_counter = []
 
-    for l in layers:
+    for r in range(runs): 
 
-        losses[str(l)] = []
-        zeroed_counter[str(l)] = []
+        losses.append([])
 
-        for r in range(runs): 
+        # train-test split of the dataset
+        X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.85, shuffle=True)
 
-            losses[str(l)].append([])
+        X_train = torch.tensor(X_train, dtype=torch.float32)
+        y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1)
 
-            # train-test split of the dataset
-            X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.85, shuffle=True)
+        X_test = torch.tensor(X_test, dtype=torch.float32)
+        y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1)
 
-            X_train = torch.tensor(X_train, dtype=torch.float32)
-            y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1)
+        # using a dataloader to randomize batching
+        train_dataset = TensorDataset(X_train, y_train)
+        train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True)
 
-            X_test = torch.tensor(X_test, dtype=torch.float32)
-            y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1)
+        bsm = LinearBSpline(layers, 3, 1, "relu")
+        optimizer = optim.Adam(bsm.parameters_no_deepspline(), lr=0.001)
+        aux_optimizer = optim.Adam(bsm.parameters_deepspline(), lr=0.0001)
+        loss_fn = nn.MSELoss()  # mean square error
+        lmbda = 1e-4 # regularization weight
 
-            # using a dataloader to randomize batching
-            train_dataset = TensorDataset(X_train, y_train)
-            train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True)
+        bsm.train()
+        for mode in ["relu", "both", "bspline"]:
+            for _ in range(epochs[mode]):
+                rloss = 0
+                for X_batch, y_batch in train_loader:
+                    if mode in ["relu", "both"]:
+                        optimizer.zero_grad()
+                    if mode in ["bspline", "both"]:
+                        aux_optimizer.zero_grad()
 
-            bsm = LinearBSpline(l, 3, 1, "relu")
-            optimizer = optim.Adam(bsm.parameters_no_deepspline(), lr=0.001)
-            aux_optimizer = optim.Adam(bsm.parameters_deepspline(), lr=0.0001)
-            loss_fn = nn.MSELoss()  # mean square error
-            lmbda = 1e-4 # regularization weight
+                    y_pred = bsm(X_batch)
+                    loss = loss_fn(y_pred, y_batch)
+                    loss2 = loss + lmbda * bsm.TV2()
+                    loss2.backward()
+                    if mode in ["relu", "both"]:
+                        optimizer.step()
+                    if mode in ["bspline", "both"]:
+                        aux_optimizer.step()
+                    rloss += loss
+                losses[r].append(loss.item())
 
-            bsm.train()
-            for mode in ["relu", "both", "bspline"]:
-                for _ in range(epochs[mode]):
-                    rloss = 0
-                    for X_batch, y_batch in train_loader:
-                        if mode in ["relu", "both"]:
-                            optimizer.zero_grad()
-                        if mode in ["bspline", "both"]:
-                            aux_optimizer.zero_grad()
+        layer_locs = []
+        layer_coeffs = []
+        zeroed_count = 0
 
-                        y_pred = bsm(X_batch)
-                        loss = loss_fn(y_pred, y_batch)
-                        loss2 = loss + lmbda * bsm.TV2()
-                        loss2.backward()
-                        if mode in ["relu", "both"]:
-                            optimizer.step()
-                        if mode in ["bspline", "both"]:
-                            aux_optimizer.step()
-                        rloss += loss
-                    losses[str(l)][r].append(loss.item())
-
-            layer_locs = []
-            layer_coeffs = []
-            zeroed_count = 0
-
-            for idx,layer in enumerate(bsm.get_layers()):
-                zeroed_counter[str(l)].append([]) # count on a per layer basis
-                if(type(layer) is deepsplines.ds_modules.deepBspline.DeepBSpline):
-                    coeffs = layer.coefficients_vect.view(layer.num_activations, layer.size).detach()
-                    layer_locs.append(layer.grid_tensor.detach())
-                    layer_coeffs.append(coeffs)
-                    
-                    for spline_idx in range(len(coeffs)):
-                        score = torch.sum(torch.abs(coeffs[spline_idx]))
-                        if(score < .05): # then we say its zeroed
-                            zeroed_count += 1
-            
-                    zeroed_counter[str(l)][idx].append(zeroed_count)
+        for idx,layer in enumerate(bsm.get_layers()):
+            zeroed_counter.append([]) # count on a per layer basis
+            if(type(layer) is deepsplines.ds_modules.deepBspline.DeepBSpline):
+                coeffs = layer.coefficients_vect.view(layer.num_activations, layer.size).detach()
+                layer_locs.append(layer.grid_tensor.detach())
+                layer_coeffs.append(coeffs)
+                
+                for spline_idx in range(len(coeffs)):
+                    score = torch.sum(torch.abs(coeffs[spline_idx]))
+                    if(score < .05): # then we say its zeroed
+                        zeroed_count += 1
+        
+                zeroed_counter[idx].append(zeroed_count)
 
     data = {
-        "losses": losses,
+        "zero_thres": zero_thres,
         "zeroed_counter": zeroed_counter,
-        "zero_thres": zero_thres
-
+        "losses": losses
     }
 
     with open(f'saved/{save_output}.json', 'w') as f:
@@ -1317,6 +1309,23 @@ def test_cycle_training(layers=[8], wb_epochs=[100,50,50,50], af_epochs=[10,10,1
 
     return df
 
-
 def CPU_vs_GPU(layers=[8]):
     return
+
+def get_model_zeroed_activations(model):
+    zeroed = []
+    if(type(model) is LinearBSpline):
+        bspline_layer_idx = 0
+        for layer in model.get_layers():
+            if(type(layer) is deepsplines.ds_modules.deepBspline.DeepBSpline):
+                zeroed.append([]) # layer level within run
+                coeffs = layer.coefficients_vect.view(layer.num_activations, layer.size).detach()
+                
+                zeroed[bspline_layer_idx] = 0
+                for spline_idx in range(len(coeffs)):
+                    score = torch.sum(torch.abs(coeffs[spline_idx]))
+                    if(score < .05): # then we say its zeroed
+                        zeroed[bspline_layer_idx] += 1
+
+                bspline_layer_idx += 1
+    return zeroed

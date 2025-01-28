@@ -8,7 +8,7 @@ hydra:
     mem_gb: 8
     timeout_min: 10080 # max: 7 days
     additional_parameters:
-      nodelist: node022
+      nodelist: node021
 
 runs: 100
 threads: 1
@@ -20,23 +20,29 @@ range: 1 # range for the spline
 
 batch_size: 10
 
-epoch_specs: ["200R", "10B", "10FB", "10B", "10FB", "10B", "10FB", "10B", "10FB"] # for regression7
+epoch_specs: ["200R", "10B"] # for regression7
 
 comp_relu: 0 # if switching to spline, save a version that you train on ReLU from the same initial model
 
+lr_wb: 0.001 # (initial) learning rate for weights and biases
+lr_bs: 0.0001 # (initial) learning rate for bspline
+lr_ls: 0.0001 # (initial) learning rate for custom linear
+lr_fb: 0.0001 # (initial) learning rate for frozen bspline
+lr_transfer_WBS: 0.0001
+
+output_dir: "."
+
+add_to_out: ""
+
+dataset: "cal_housing"
+
+
+# deprecated in r7, used for regression6
+bspline_order: ["bspline", "both"] 
 relu_epochs: 0
 bspline_epochs: 0
 both_epochs: 0
 lspline_epochs: 0
-
-lr_wb: 0.001 # (initial) learning rate for weights and biases
-lr_bs: 0.0001 # (initial) learning rate for bspline
-lr_ls: 0.0001 # (initial) learning rate for linear spline
 lrs: "none" # learning rate scheduler
 lrs_gamma: .9
 lrs_stepsize: 5
-
-output_dir: "."
-bspline_order: ["bspline", "both"]
-
-add_to_out: ""

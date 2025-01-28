@@ -1,3 +1,5 @@
+# regression 8 adds support for bike sharing dataset
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,6 +21,11 @@ from torch.utils.data import TensorDataset, DataLoader
 import linspline
 
 import string, random, os, re
+import pandas as pd
+
+import sys, os
+sys.path.insert(0, os.path.abspath('../DeepSplines'))
+import deepsplines
 
 class Config:
     def __init__(self, **kwargs):
@@ -34,7 +41,7 @@ class Config:
         return {key: convert(value) for key, value in self.__dict__.items()}
 
 
-def training_run(mparams, tparams, X, y):
+def training_run(mparams, tparams, X, y, loss_fn):
     
     # train-test split of the dataset
     X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.85, shuffle=True)
@@ -48,8 +55,6 @@ def training_run(mparams, tparams, X, y):
     # using a dataloader to randomize batching
     train_dataset = TensorDataset(X_train, y_train)
     train_loader = DataLoader(train_dataset, batch_size=tparams.batch_size, shuffle=True)
-    
-    loss_fn = nn.MSELoss()  # mean square error
 
     train_history = []
     val_history = []
@@ -63,12 +68,12 @@ def training_run(mparams, tparams, X, y):
     model_save_code = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
 
     arch = ""
-    prev_arch = ""
 
     lmbda = 1e-4 # regularization weight
     lipschitz = False # lipschitz control
     model = None
 
+    isfirstepoch = True
     for train_arch in tparams.epoch_specs:
         '''
             xxxR = xxx ReLU epochs
@@ -80,19 +85,20 @@ def training_run(mparams, tparams, X, y):
 
         arch = re.findall(r"[A-Za-z]+", train_arch)[0]
         epochs = int(re.findall(r'\d+', train_arch)[0])
+        from_relu = False
 
-        print(f"Training {arch} for {epochs}")
-
-        if(arch == "R"): #! ReLU epochs, can ONLY come first
+        if(arch == "R"): # ReLU epochs, can ONLY come first
             model = LinearReLU(mparams.layers)
             optimizer = optim.Adam(model.parameters(), lr=tparams.lr_wb)
+            if(tparams.lrs == "steplr"):
+                    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=tparams.lrs_stepsize, gamma=tparams.lrs_gamma)
             epochs += tparams.comp_relu
 
         elif(arch != "L"): # one of the BSpline models: WB, FB, or B
             if(type(model) == LinearReLU): # ReLU to a BSpline
                 model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
                 model.load_state_dict(torch.load(f"./temp_models/{model_save_code}.pt", weights_only=True), strict=False)
-
+                from_relu = True
             elif(model is None): # no ReLU pretraining
                 model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
 
@@ -101,7 +107,7 @@ def training_run(mparams, tparams, X, y):
                     wb_param.requires_grad = True
                 for af_param in model.parameters_deepspline():
                     af_param.requires_grad = False
-                optimizer = optim.Adam(model.parameters_no_deepspline(), lr=tparams.lr_wb)
+                optimizer = optim.Adam(model.parameters_no_deepspline(), lr=tparams.lr_fb)
                 aux_optimizer = None
 
             elif(arch == "WB"):
@@ -109,9 +115,17 @@ def training_run(mparams, tparams, X, y):
                     wb_param.requires_grad = True
                 for af_param in model.parameters_deepspline():
                     af_param.requires_grad = True
-                optimizer = optim.Adam(model.parameters_no_deepspline(), lr=tparams.lr_wb)
+
+                if(isfirstepoch or from_relu):
+                    optimizer = optim.Adam(model.parameters_no_deepspline(), lr=tparams.lr_wb)
+                else:
+                    optimizer = optim.Adam(model.parameters_no_deepspline(), lr=tparams.lr_transfer_WBS)
                 aux_optimizer = optim.Adam(model.parameters_deepspline(), lr=tparams.lr_bs)
 
+
+                if(tparams.lrs == "steplr-wbstransfer" and tparams.lrs == "steplr-wbstransfer"):
+                    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=tparams.lrs_stepsize, gamma=tparams.lrs_gamma)
+                
             elif(arch == "B"):
                 for wb_param in model.parameters_no_deepspline():
                     wb_param.requires_grad = False
@@ -120,7 +134,7 @@ def training_run(mparams, tparams, X, y):
                 optimizer = None
                 aux_optimizer = optim.Adam(model.parameters_deepspline(), lr=tparams.lr_bs)
 
-        else: # ! LSpline epochs, can ONLY come last
+        else: # LSpline epochs, can ONLY come last
             if(type(model) == LinearReLU):
                 model = LinearBSpline(mparams.layers, mparams.cpoints, mparams.range_)
                 model.load_state_dict(torch.load(f"./temp_models/{model_save_code}.pt", weights_only=True), strict=False)
@@ -129,6 +143,7 @@ def training_run(mparams, tparams, X, y):
             optimizer = optim.Adam(model.parameters(), lr=tparams.lr_ls)
             aux_optimizer = None
         
+        isfirstepoch = False
                 
         train_wb = arch in ["R", "WB", "FB", "L"] # train weights and biases
         train_af = arch in ["WB", "B"] # train activation func
@@ -172,6 +187,12 @@ def training_run(mparams, tparams, X, y):
             model.eval()
             y_pred = model(X_test) # pass in all the validation data
             loss = float(loss_fn(y_pred, y_test)) # validation loss on the whole dataset
+
+            if(tparams.lrs == "steplr" or (arch=="WB" and tparams.lrs == "steplr-wbstransfer")):
+                if(train_wb):
+                    scheduler.step()
+                # if(train_af and aux_scheduler.get_last_lr()[0] * tparams.lrs_gamma > 0.00001):
+                    # aux_scheduler.step()
             
             if(tparams.comp_relu > 0 and arch == "R"):
                 in_pretraining = epoch < epochs - tparams.comp_relu - 1
@@ -206,20 +227,13 @@ def training_run(mparams, tparams, X, y):
 
     train_times2 = [t.seconds+(t.microseconds / 1000 / 1000) for t in train_times]
     cr_train_times2 = [t.seconds+(t.microseconds / 1000 / 1000) for t in cr_train_times]
-    
+
     return model, train_history, val_history, train_times2, cr_val_history, cr_train_history, cr_train_times2
 
 
 import utils
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def my_app(cfg: DictConfig) -> None:
-
-    # utils.train_models_count_zeroed_AFs(
-    #     runs = 1,
-    #     layers=[[8], [24, 8], [24, 48, 24, 8]], 
-    #     epochs={"relu": 200, "both": 0, "bspline": 10}
-    # )
-    # return
 
     if(cfg.runs == 0):
         return
@@ -231,8 +245,23 @@ def my_app(cfg: DictConfig) -> None:
     torch.set_num_threads(cfg.threads)
 
     # Load the data
-    housing = fetch_california_housing()
-    X, y = housing.data, housing.target
+
+    if(cfg.dataset == "cal_housing"):
+        housing = fetch_california_housing()
+        loss_fn = nn.MSELoss()  # mean square error
+        X, y = housing.data, housing.target
+    # elif(cfg.dataset == "bike_sharing"):
+    #     bikes = pd.read_csv('bikesharing/day.csv') # not spatial
+    #     filtered = bikes.copy()
+    #     remove = ["dteday", "yr", "instant", "casual", "registered", "season", "workingday"]
+    #     for column in remove:
+    #         filtered = filtered.drop(column, axis=1)
+    #     data = filtered.drop("cnt", axis=1)
+    #     target = filtered["cnt"]
+    #     X, y = data.values, target.values
+    #     loss_fn = nn.RMSELoss()  # root mean squared error
+    else:
+        print("invalid dataset")
 
     run_summaries = []
     run_validations = [] # validations
@@ -258,6 +287,8 @@ def my_app(cfg: DictConfig) -> None:
         lr_wb = cfg.lr_wb,
         lr_bs = cfg.lr_bs,
         lr_ls = cfg.lr_ls,
+        lr_fb = cfg.lr_fb,
+        lr_transfer_WBS = cfg.lr_transfer_WBS,
         lrs = cfg.lrs,
         lrs_gamma = cfg.lrs_gamma,
         lrs_stepsize = cfg.lrs_stepsize,
@@ -266,10 +297,12 @@ def my_app(cfg: DictConfig) -> None:
 
     print("Init complete.")
     
+    zeroed = []
     for r in range(cfg.runs):
-        start_time = datetime.now()
-        model, train_history, val_history, train_times, cr_val_history, cr_train_history, cr_train_times = training_run(mparams, tparams, X, y)
 
+        start_time = datetime.now()
+        model, train_history, val_history, train_times, cr_val_history, cr_train_history, cr_train_times = training_run(mparams, tparams, X, y, loss_fn)
+        
         run_validations.append(val_history)
         run_history.append(train_history)
         run_epoch_times.append(train_times) # microsec to seconds
@@ -280,6 +313,8 @@ def my_app(cfg: DictConfig) -> None:
             cr_run_history.append(cr_train_history)
             cr_run_epoch_times.append(cr_train_times) # microsec to seconds
             cr_run_summaries.append([r+1, min(cr_val_history), cr_val_history[-1], round(sum(cr_run_epoch_times[-1]),2) ])
+
+        zeroed.append(utils.get_model_zeroed_activations(model))
 
         print(f"Run {r} complete: {(datetime.now() - start_time).seconds}s")
 
@@ -301,7 +336,7 @@ def my_app(cfg: DictConfig) -> None:
     if(outliers > 0):
         print(f"rerunning {outliers} outliers...")
     while(rerun < outliers):
-        model, train_history, val_history, train_times, cr_val_history, cr_train_history, cr_train_times = training_run(mparams, tparams, X, y)
+        model, train_history, val_history, train_times, cr_val_history, cr_train_history, cr_train_times = training_run(mparams, tparams, X, y, loss_fn)
         if(val_history[-1] <= avg_fin_loss*1.5):
             if(cfg.comp_relu > 0 and cr_val_history[-1] <= cr_avg*1.5): # if comp_relu, we also need to check that
                 run_validations.append(val_history)
@@ -337,6 +372,7 @@ def my_app(cfg: DictConfig) -> None:
         "times": run_epoch_times,
         "vals": run_validations,
         "trains": run_history,
+        "zeroed": zeroed, # doesn't factor in outliers
     }
     
     if(cfg.comp_relu > 0):

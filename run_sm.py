@@ -6,8 +6,8 @@ import utils
 def my_app(cfg: DictConfig) -> None:
 
     utils.train_models_count_zeroed_AFs(
-        save_output=cfg.add_to_out,
-        runs = 5,
+        save_output=f"zeroed_{cfg.layers}",
+        runs = 100,
         layers=cfg.layers, 
         epochs={"relu": 200, "both": 0, "bspline": 10}
     )
