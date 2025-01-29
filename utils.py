@@ -215,6 +215,111 @@ def plot_bspline(locs, coeffs, degree=1, scale_by_coeff=False, hide_bases=False)
         
         ax2.grid(True)
 
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from scipy.interpolate import BSpline
+
+def plot_bspline_sb_side_by_side(locs, coeffs, degree=1, scale_by_coeff=False, hide_bases=False):
+    """
+    Plot a B-spline using Seaborn for styling and color palette, with an option to show
+    the spline on one subplot and the basis functions on another subplot, side by side.
+
+    Parameters
+    ----------
+    locs : array-like
+        The x-locations of the control points (and boundary knots).
+    coeffs : array-like
+        The coefficients (or y-values) corresponding to `locs`.
+    degree : int, optional
+        The degree of the B-spline, by default 1.
+    scale_by_coeff : bool, optional
+        If True, each basis function is scaled by the coefficient value. Default is False.
+    hide_bases : bool, optional
+        If True, only show the main B-spline and control points (no basis functions).
+        Default is False.
+    """
+    # Use a Seaborn theme and automatically chosen color palette
+    sns.set_theme(style="whitegrid")
+
+    # Simple ReLU function for reference
+    def relu(x):
+        return np.maximum(0, x)
+    
+    # Generate colors from Seaborn palette
+    colors = sns.color_palette("husl", n_colors=len(coeffs))
+
+    # Construct the knots
+    knots = np.concatenate((
+        [locs[0]] * (degree + 1),  # repeated at start
+        locs[1:-1],               # interior
+        [locs[-1]] * (degree + 1) # repeated at end
+    ))
+    
+    # Create the BSpline object
+    bspline = BSpline(knots, coeffs, degree)
+    
+    # Set up the figure
+    if hide_bases:
+        # Only one subplot if we're hiding the basis functions
+        fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
+        ax2 = None
+    else:
+        # Two subplots, side by side
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Plot ReLU as a reference on ax1
+    x_vals = np.linspace(min(locs), max(locs), 100)
+    y_relu = relu(x_vals)
+    ax1.plot(x_vals, y_relu, color='grey', label='ReLU')
+    
+    # Plot the main B-spline
+    ax1.plot(x_vals, bspline(x_vals), 'black', lw=2, alpha=0.7, label='BSpline')
+    
+    # Plot control points
+    for i, (x_pt, y_pt) in enumerate(zip(locs, coeffs)):
+        ax1.scatter(x_pt, y_pt, color=colors[i], s=50, zorder=5)
+        ax1.text(x_pt, y_pt, f'$P_{{{i+1}}}$', color=colors[i],
+                 ha='right', va='bottom', fontsize=9)
+    
+    ax1.set_title('B-Spline with Control Points')
+    ax1.legend()
+    
+    # If bases are not hidden, plot them on ax2
+    if not hide_bases:
+        # Number of basis functions
+        n_basis = len(knots) - (degree + 1)
+        
+        # Fine grid for evaluating the basis functions
+        x_fine = np.linspace(knots[0], knots[-1], 1000)
+        
+        for i in range(n_basis):
+            # Build the i-th basis function (all zeros except 1 at index i)
+            coeffs_basis = np.zeros(n_basis)
+            coeffs_basis[i] = 1
+            spline_i = BSpline(knots, coeffs_basis, degree)
+            
+            y_basis = spline_i(x_fine)
+            
+            # Either scale the basis function by its coefficient or not
+            if scale_by_coeff:
+                ax2.plot(x_fine, coeffs[i] * y_basis, 
+                         label=f'$B_{i}(x)$ (scaled)', alpha=0.75, color=colors[i])
+                ax2.set_title('B-Spline Basis Functions (Scaled by Coefficients)')
+            else:
+                ax2.plot(x_fine, y_basis,
+                         label=f'$B_{i}(x)$', alpha=0.75, color=colors[i])
+                ax2.set_title('B-Spline Basis Functions')
+        
+        ax2.legend()
+        ax2.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+
+
 def plot_linspline(locs, coeffs, degree=1, scale_by_coeff=True):
     
     def relu(x):
@@ -983,6 +1088,8 @@ def profile_model(arch, layers, ctrl=3, range_=1, input_size=8, batch_size=10):
         flops = float(base_flops.replace("K", "").strip()) * 1000 / batch_size
     elif(base_flops.__contains__("M")):
         flops = float(base_flops.replace("M", "").strip()) * 1000000 / batch_size
+    else:
+        flops = float(base_flops) / batch_size
 
     if(arch == "BSpline"):
         flops += utils.calc_bspline_flops(model) #! this might be incorrect- need to check w the implementation

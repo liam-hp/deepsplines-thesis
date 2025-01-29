@@ -36,7 +36,7 @@ class LinearSplineLayer(nn.Module):
         super(LinearSplineLayer, self).__init__()
         # Assume locs and coeffs are lists of tensors
 
-        self.locs = nn.Parameter(locs.contiguous(), requires_grad=False)
+        self.locs = locs.contiguous()
         self.coeffs = nn.Parameter(coeffs.contiguous(), requires_grad=False)
 
     def forward(self, x):

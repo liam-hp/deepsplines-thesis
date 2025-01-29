@@ -74,6 +74,8 @@ def training_run(mparams, tparams, X, y, loss_fn):
     model = None
 
     isfirstepoch = True
+    alternate_epoch_training = True #! temp
+
     for train_arch in tparams.epoch_specs:
         '''
             xxxR = xxx ReLU epochs
@@ -154,28 +156,29 @@ def training_run(mparams, tparams, X, y, loss_fn):
             model.train()
             epoch_loss = 0
             epoch_start = datetime.now()
+            
             # train over batches
             for X_batch, y_batch in train_loader:
 
                 # zero grad, forward pass, and calc loss
                 y_pred = model(X_batch)
 
-                if(train_wb):
+                if(train_wb and ((not alternate_epoch_training) or epoch%2==0)):
                     optimizer.zero_grad()
 
                 loss = loss_fn(y_pred, y_batch)
                 epoch_loss += float(loss) * len(X_batch) # dont record bspline loss (for comparison)
 
-                if(train_af):
+                if(train_af and ((not alternate_epoch_training) or epoch%2==1)):
                     aux_optimizer.zero_grad()
                     loss += lmbda * (model.BV2() if lipschitz else model.TV2())
 
                 # compute gradient and step on the optimizer
                 loss.backward()
 
-                if(train_wb):
+                if(train_wb and ((not alternate_epoch_training) or epoch%2==0)):
                     optimizer.step()
-                if(train_af):
+                if(train_af and ((not alternate_epoch_training) or epoch%2==1)):
                     aux_optimizer.step()    
 
             epoch_end = datetime.now()      
